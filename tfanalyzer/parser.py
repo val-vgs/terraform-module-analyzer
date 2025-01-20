@@ -14,48 +14,58 @@ class TerraformParser:
     def extract_variables(self, parsed_data: Dict) -> Dict:
         """Extract and format variable definitions."""
         variables = {}
-        for var_name, var_config in parsed_data.get('variable', {}).items():
-            variables[var_name] = {
-                'type': var_config.get('type'),
-                'description': var_config.get('description'),
-                'default': var_config.get('default'),
-                'validation_rules': self._extract_validation_rules(var_config)
-            }
+        for var_name, var_configs in parsed_data.get('variable', {}).items():
+            if isinstance(var_configs, list) and var_configs:  # HCL2 parser returns list
+                var_config = var_configs[0]  # Take first element as it's a block
+                variables[var_name] = {
+                    'type': var_config.get('type'),
+                    'description': var_config.get('description'),
+                    'default': var_config.get('default'),
+                    'validation_rules': self._extract_validation_rules(var_config)
+                }
         return variables
     
     def _extract_validation_rules(self, var_config: Dict) -> List[Dict]:
         """Extract validation rules from variable configuration."""
         rules = []
         if 'validation' in var_config:
-            for validation in var_config['validation']:
-                rules.append({
-                    'condition': validation.get('condition'),
-                    'error_message': validation.get('error_message')
-                })
+            validations = var_config['validation']
+            if isinstance(validations, list):
+                for validation in validations:
+                    if isinstance(validation, dict):
+                        rules.append({
+                            'condition': validation.get('condition'),
+                            'error_message': validation.get('error_message')
+                        })
         return rules
     
     def extract_outputs(self, parsed_data: Dict) -> Dict:
         """Extract and format output definitions."""
         outputs = {}
-        for out_name, out_config in parsed_data.get('output', {}).items():
-            outputs[out_name] = {
-                'description': out_config.get('description'),
-                'value': out_config.get('value'),
-                'sensitive': out_config.get('sensitive', False)
-            }
+        for out_name, out_configs in parsed_data.get('output', {}).items():
+            if isinstance(out_configs, list) and out_configs:
+                out_config = out_configs[0]
+                outputs[out_name] = {
+                    'description': out_config.get('description'),
+                    'value': out_config.get('value'),
+                    'sensitive': out_config.get('sensitive', False)
+                }
         return outputs
     
     def extract_resources(self, parsed_data: Dict) -> Dict:
         """Extract and format resource definitions."""
         resources = {}
         for res_type, res_configs in parsed_data.get('resource', {}).items():
-            for res_name, res_config in res_configs.items():
-                resources[f"{res_type}.{res_name}"] = {
-                    'config': res_config,
-                    'provider': self._extract_provider(res_type),
-                    'dependencies': self._extract_resource_dependencies(res_config),
-                    'tags': res_config.get('tags', {})
-                }
+            if isinstance(res_configs, dict):
+                for res_name, res_config in res_configs.items():
+                    if isinstance(res_config, list) and res_config:
+                        config = res_config[0]
+                        resources[f"{res_type}.{res_name}"] = {
+                            'config': config,
+                            'provider': self._extract_provider(res_type),
+                            'dependencies': self._extract_resource_dependencies(config),
+                            'tags': config.get('tags', {})
+                        }
         return resources
     
     def _extract_provider(self, resource_type: str) -> str:
@@ -82,36 +92,44 @@ class TerraformParser:
         """Extract and format data source definitions."""
         data_sources = {}
         for ds_type, ds_configs in parsed_data.get('data', {}).items():
-            for ds_name, ds_config in ds_configs.items():
-                data_sources[f"{ds_type}.{ds_name}"] = {
-                    'config': ds_config,
-                    'provider': self._extract_provider(ds_type)
-                }
+            if isinstance(ds_configs, dict):
+                for ds_name, ds_config in ds_configs.items():
+                    if isinstance(ds_config, list) and ds_config:
+                        data_sources[f"{ds_type}.{ds_name}"] = {
+                            'config': ds_config[0],
+                            'provider': self._extract_provider(ds_type)
+                        }
         return data_sources
     
     def extract_providers(self, parsed_data: Dict) -> Dict:
         """Extract and format provider configurations."""
         providers = {}
         for prov_type, prov_configs in parsed_data.get('provider', {}).items():
-            providers[prov_type] = {
-                'config': prov_configs,
-                'alias': prov_configs.get('alias')
-            }
+            if isinstance(prov_configs, list) and prov_configs:
+                providers[prov_type] = {
+                    'config': prov_configs[0],
+                    'alias': prov_configs[0].get('alias')
+                }
         return providers
 
     def extract_locals(self, parsed_data: Dict) -> Dict:
         """Extract and format local values."""
-        return parsed_data.get('locals', {})
+        locals_data = parsed_data.get('locals', [])
+        if isinstance(locals_data, list) and locals_data:
+            return locals_data[0]
+        return {}
 
     def extract_module_calls(self, parsed_data: Dict) -> Dict:
         """Extract and format module calls."""
         modules = {}
-        for mod_name, mod_config in parsed_data.get('module', {}).items():
-            modules[mod_name] = {
-                'source': mod_config.get('source'),
-                'version': mod_config.get('version'),
-                'inputs': {k: v for k, v in mod_config.items() 
-                         if k not in ['source', 'version', 'providers']},
-                'providers': mod_config.get('providers', {})
-            }
+        for mod_name, mod_configs in parsed_data.get('module', {}).items():
+            if isinstance(mod_configs, list) and mod_configs:
+                mod_config = mod_configs[0]
+                modules[mod_name] = {
+                    'source': mod_config.get('source'),
+                    'version': mod_config.get('version'),
+                    'inputs': {k: v for k, v in mod_config.items() 
+                             if k not in ['source', 'version', 'providers']},
+                    'providers': mod_config.get('providers', {})
+                }
         return modules
