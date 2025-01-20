@@ -29,22 +29,60 @@ class TerraformAnalyzer:
     def analyze_module(self, module_path: Path) -> ModuleInfo:
         """Analyze a single Terraform module."""
         tf_files = list(module_path.glob('*.tf'))
-        module_data = {}
+        variables = {}
+        outputs = {}
+        resources = {}
+        dependencies = set()
         
         for tf_file in tf_files:
-            with open(tf_file) as f:
-                content = f.read()
-                parsed = self.parser.parse_file(content)
-                if parsed:  # Only update if parsing was successful
-                    for block_type, block_content in parsed.items():
-                        if block_type not in module_data:
-                            module_data[block_type] = {}
-                        module_data[block_type].update(block_content)
+            try:
+                with open(tf_file) as f:
+                    content = f.read()
+                    parsed = hcl2.loads(content)
+                    
+                    # Extract variables
+                    if 'variable' in parsed:
+                        for var_name, var_configs in parsed['variable'].items():
+                            if isinstance(var_configs, list) and var_configs:
+                                variables[var_name] = var_configs[0]
+                    
+                    # Extract outputs
+                    if 'output' in parsed:
+                        for out_name, out_configs in parsed['output'].items():
+                            if isinstance(out_configs, list) and out_configs:
+                                outputs[out_name] = out_configs[0]
+                    
+                    # Extract resources
+                    if 'resource' in parsed:
+                        for res_type, res_configs in parsed['resource'].items():
+                            if isinstance(res_configs, dict):
+                                for res_name, res_config in res_configs.items():
+                                    if isinstance(res_config, list) and res_config:
+                                        resources[f"{res_type}.{res_name}"] = res_config[0]
+                    
+                    # Extract dependencies from modules
+                    if 'module' in parsed:
+                        for mod_name, mod_configs in parsed['module'].items():
+                            if isinstance(mod_configs, list) and mod_configs and 'source' in mod_configs[0]:
+                                dependencies.add(mod_configs[0]['source'])
+                    
+                    # Extract data source dependencies
+                    if 'data' in parsed:
+                        for data_type, data_configs in parsed['data'].items():
+                            if isinstance(data_configs, dict):
+                                for data_name in data_configs:
+                                    dependencies.add(f"data.{data_type}.{data_name}")
+            
+            except Exception as e:
+                print(f"Warning: Error parsing {tf_file}: {e}")
+                continue
         
-        variables = module_data.get('variable', {})
-        outputs = module_data.get('output', {})
-        resources = module_data.get('resource', {})
-        dependencies = self.extract_dependencies(module_data)
+        source_code = ''
+        for tf_file in tf_files:
+            try:
+                source_code += tf_file.read_text() + '\n'
+            except Exception as e:
+                print(f"Warning: Error reading {tf_file}: {e}")
         
         return ModuleInfo(
             path=module_path,
@@ -52,29 +90,8 @@ class TerraformAnalyzer:
             outputs=outputs,
             resources=resources,
             dependencies=dependencies,
-            source_code=''.join(tf_file.read_text() for tf_file in tf_files)
+            source_code=source_code
         )
-    
-    def extract_dependencies(self, module_data: Dict) -> Set[str]:
-        """Extract module dependencies from the Terraform configuration."""
-        dependencies = set()
-        
-        # Extract module calls
-        for module in module_data.get('module', {}).items():
-            if isinstance(module[1], dict) and 'source' in module[1]:
-                dependencies.add(module[1]['source'])
-        
-        # Extract data source dependencies
-        for data_type, data_configs in module_data.get('data', {}).items():
-            for data_name in data_configs:
-                dependencies.add(f"data.{data_type}.{data_name}")
-
-        # Extract resource dependencies
-        for resource_type, resources in module_data.get('resource', {}).items():
-            for resource_name in resources:
-                dependencies.add(f"{resource_type}.{resource_name}")
-        
-        return dependencies
     
     def analyze(self):
         """Perform complete analysis of all Terraform modules."""
