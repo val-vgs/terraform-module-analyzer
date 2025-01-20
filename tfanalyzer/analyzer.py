@@ -35,7 +35,11 @@ class TerraformAnalyzer:
             with open(tf_file) as f:
                 content = f.read()
                 parsed = self.parser.parse_file(content)
-                module_data.update(parsed)
+                if parsed:  # Only update if parsing was successful
+                    for block_type, block_content in parsed.items():
+                        if block_type not in module_data:
+                            module_data[block_type] = {}
+                        module_data[block_type].update(block_content)
         
         variables = module_data.get('variable', {})
         outputs = module_data.get('output', {})
@@ -56,13 +60,14 @@ class TerraformAnalyzer:
         dependencies = set()
         
         # Extract module calls
-        for module in module_data.get('module', {}).values():
-            if 'source' in module:
-                dependencies.add(module['source'])
+        for module in module_data.get('module', {}).items():
+            if isinstance(module[1], dict) and 'source' in module[1]:
+                dependencies.add(module[1]['source'])
         
         # Extract data source dependencies
-        for data in module_data.get('data', {}).values():
-            dependencies.add(f"data.{data}")
+        for data_type, data_configs in module_data.get('data', {}).items():
+            for data_name in data_configs:
+                dependencies.add(f"data.{data_type}.{data_name}")
 
         # Extract resource dependencies
         for resource_type, resources in module_data.get('resource', {}).items():
@@ -77,14 +82,18 @@ class TerraformAnalyzer:
         module_paths = {file.parent for file in tf_files}
         
         for module_path in module_paths:
-            relative_path = module_path.relative_to(self.root_path)
-            self.modules[str(relative_path)] = self.analyze_module(module_path)
+            try:
+                relative_path = module_path.relative_to(self.root_path)
+                self.modules[str(relative_path)] = self.analyze_module(module_path)
+            except Exception as e:
+                print(f"Error analyzing module {module_path}: {e}")
         
         # Build dependency graph
         for module_name, module_info in self.modules.items():
             self.dependency_graph.add_node(module_name)
             for dep in module_info.dependencies:
-                self.dependency_graph.add_edge(module_name, dep)
+                if isinstance(dep, str):  # Ensure dependency is a string
+                    self.dependency_graph.add_edge(module_name, dep)
         
         return self
 
@@ -154,7 +163,9 @@ class TerraformAnalyzer:
         var_similarity = len(vars1.intersection(vars2)) / max(len(vars1), len(vars2)) if vars1 or vars2 else 0
         
         # Compare dependencies
-        dep_similarity = len(module1.dependencies.intersection(module2.dependencies)) / max(len(module1.dependencies), len(module2.dependencies)) if module1.dependencies or module2.dependencies else 0
+        dep1 = {str(d) for d in module1.dependencies}
+        dep2 = {str(d) for d in module2.dependencies}
+        dep_similarity = len(dep1.intersection(dep2)) / max(len(dep1), len(dep2)) if dep1 or dep2 else 0
         
         # Weighted average
         return (resource_similarity * 0.5 + var_similarity * 0.3 + dep_similarity * 0.2)
