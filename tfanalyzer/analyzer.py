@@ -1,11 +1,160 @@
-"""Module analyzer with recursive module inspection and tag analysis."""
-[Previous content remains the same until the analyze method...]
+"""Main module analyzer implementation."""
+from pathlib import Path
+from typing import Dict, List, Set, Optional, Tuple
+import networkx as nx
+import csv
+import re
+from .parser import TerraformParser
+from .models import ModuleInfo, ResourceInfo, TagAnalysis
+from .resources import (
+    is_taggable, REQUIRED_TAGS, get_provider_from_resource,
+    get_resource_service, get_common_tag_patterns, suggest_tag_fixes
+)
+
+class ModuleAnalyzer:
+    """Core module analysis functionality."""
+    
+    def __init__(self, root_path: Path, output_path: Path, config_path: str = None):
+        self.root_path = root_path.resolve()
+        self.output_path = output_path
+        self.modules: Dict[str, ModuleInfo] = {}
+        self.dependency_graph = nx.DiGraph()
+        self.processed_modules = set()
+        self.parser = TerraformParser()
+
+    def analyze_code(self, module_path: Path) -> ModuleInfo:
+        """Analyze a Terraform module's code."""
+        tf_files = list(module_path.glob('*.tf'))
+        combined_config = {}
+        
+        # Parse and combine all .tf files
+        for tf_file in tf_files:
+            try:
+                with open(tf_file) as f:
+                    parsed = self.parser.parse_file(f.read())
+                    for block_type, block_content in parsed.items():
+                        if block_type not in combined_config:
+                            combined_config[block_type] = {}
+                        if isinstance(block_content, dict):
+                            combined_config[block_type].update(block_content)
+            except Exception as e:
+                print(f"Warning: Error parsing {tf_file}: {e}")
+        
+        return combined_config
+
+    def analyze_tags(self, resource_type: str, resource_config: Dict) -> Tuple[bool, List[str]]:
+        """Analyze tags for a resource."""
+        if not is_taggable(resource_type):
+            return False, []
+        
+        tags = resource_config.get('tags', {})
+        if not tags:
+            return True, []  # Resource supports tags but has none
+        
+        # Extract variable references from tags
+        tag_vars = []
+        config_str = str(tags)
+        
+        patterns = [
+            r'\${var\.([^}]+)}',              # ${var.xxx}
+            r'var\.([a-zA-Z0-9_-]+)',         # var.xxx
+            r'merge\s*\(\s*var\.([^,\)]+)',   # merge(var.xxx, ...)
+            r'lookup\s*\(\s*var\.([^,\)]+)'   # lookup(var.xxx, ...)
+        ]
+        
+        for pattern in patterns:
+            tag_vars.extend(re.findall(pattern, config_str))
+        
+        return True, list(set(tag_vars))
+
+    def create_resource_info(self, res_type: str, res_name: str, res_config: Dict, 
+                           module_path: Path, submodule_source: str = None) -> ResourceInfo:
+        """Create ResourceInfo for a resource."""
+        supports_tags, tag_vars = self.analyze_tags(res_type, res_config)
+        
+        try:
+            rel_path = module_path.relative_to(self.root_path)
+        except ValueError:
+            rel_path = module_path.name
+        
+        return ResourceInfo(
+            name=res_name,
+            type=res_type,
+            config=res_config,
+            supports_tags=supports_tags,
+            has_tags='tags' in res_config,
+            tag_variables=tag_vars,
+            module_path=str(rel_path),
+            submodule_source=submodule_source
+        )
+
+    def generate_tag_analysis_csv(self):
+        """Generate CSV report of tag analysis."""
+        csv_path = self.output_path / 'tag_analysis.csv'
+        self.output_path.mkdir(parents=True, exist_ok=True)
+        
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Module Path',
+                'Submodule Source',
+                'Resource Type',
+                'Resource Name',
+                'Full Resource ID',
+                'Supports Tags',
+                'Has Tags',
+                'Tag Variables Used',
+                'Issues',
+                'Has Tags Variable',
+                'Local Tags Variable',
+                'Inherited Tags',
+                'Missing Required Tags',
+                'Extra Tags',
+            ])
+            
+            self._write_module_resources(writer)
+    
+    def _write_module_resources(self, writer: csv.writer, 
+                              module_info: Optional[ModuleInfo] = None,
+                              module_path: str = ""):
+        """Write resource information to CSV recursively."""
+        if module_info is None:
+            for name, info in self.modules.items():
+                self._write_module_resources(writer, info, name)
+            return
+
+        # Write this module's resources
+        for resource_name, resource in module_info.resources.items():
+            tag_analysis = TagAnalysis.analyze(resource, module_info, REQUIRED_TAGS)
+            
+            writer.writerow([
+                module_path,
+                resource.submodule_source or '',
+                resource.type,
+                resource.name,
+                f"{resource.type}.{resource.name}",
+                'Yes' if resource.supports_tags else 'No',
+                'Yes' if resource.has_tags else 'No',
+                ', '.join(resource.tag_variables),
+                '; '.join(tag_analysis.issues),
+                'Yes' if module_info.has_tags_var else 'No',
+                tag_analysis.local_tags_var or '',
+                ', '.join(tag_analysis.inherited_tags),
+                ', '.join(tag_analysis.missing_required_tags),
+                ', '.join(tag_analysis.extra_tags)
+            ])
+
+        # Write submodule resources
+        for submod_name, submod_info in module_info.submodules.items():
+            submod_path = f"{module_path}/{submod_name}"
+            self._write_module_resources(writer, submod_info, submod_path)
 
     def analyze(self):
         """Perform complete analysis of all Terraform modules."""
-        tf_files = self.find_tf_files(self.root_path)
+        tf_files = list(self.root_path.rglob('*.tf'))
         module_paths = {file.parent for file in tf_files}
         
+        # Analyze each module
         for module_path in module_paths:
             try:
                 relative_path = module_path.relative_to(self.root_path)
@@ -20,107 +169,7 @@
                 if isinstance(dep, str):
                     self.dependency_graph.add_edge(module_name, dep)
         
-        # Generate CSV report
-        self.generate_tag_analysis_csv(self.output_path)
+        # Generate analysis report
+        self.generate_tag_analysis_csv()
         
         return self
-
-    def _calculate_complexity_score(self, module: ModuleInfo) -> float:
-        """Calculate a complexity score for the module."""
-        # Base score from components
-        base_score = (
-            len(module.variables) * 1.0 +
-            len(module.outputs) * 0.8 +
-            len(module.resources) * 1.5 +
-            len(module.dependencies) * 1.2
-        )
-        
-        # Add submodule complexity
-        for submodule in module.submodules.values():
-            base_score += self._calculate_complexity_score(submodule) * 0.5
-        
-        # Code size factor
-        code_lines = len(module.source_code.splitlines())
-        size_factor = code_lines / 100
-        
-        # Tag handling complexity
-        tag_factor = 0
-        if module.has_tags_var:
-            tag_factor += 0.2  # Base increase for tag handling
-            tag_factor += len(module.tag_analysis) * 0.1  # Penalty for each resource with tag issues
-            
-            # Calculate tag propagation complexity
-            tag_vars = set()
-            for resource in module.resources.values():
-                tag_vars.update(resource.tag_variables)
-            tag_factor += len(tag_vars) * 0.05  # Slight increase for each unique tag variable used
-        
-        return round(base_score * (1 + size_factor * 0.5 + tag_factor), 2)
-
-    def find_similar_modules(self, module_name: str, threshold: float = 0.7) -> List[Dict]:
-        """Find modules with similar structure and dependencies."""
-        target_module = self.modules[module_name]
-        similar_modules = []
-        
-        for other_name, other_module in self.modules.items():
-            if other_name == module_name:
-                continue
-                
-            similarity_score = self._calculate_similarity(target_module, other_module)
-            if similarity_score >= threshold:
-                similar_modules.append({
-                    "name": other_name,
-                    "similarity_score": round(similarity_score, 2),
-                    "common_resources": self._get_common_resources(target_module, other_module),
-                    "common_tag_vars": self._get_common_tag_vars(target_module, other_module)
-                })
-        
-        return sorted(similar_modules, key=lambda x: x["similarity_score"], reverse=True)
-
-    def _get_common_resources(self, module1: ModuleInfo, module2: ModuleInfo) -> List[str]:
-        """Get list of resource types common to both modules."""
-        resources1 = {res.type for res in module1.resources.values()}
-        resources2 = {res.type for res in module2.resources.values()}
-        return list(resources1.intersection(resources2))
-
-    def _get_common_tag_vars(self, module1: ModuleInfo, module2: ModuleInfo) -> List[str]:
-        """Get list of tag variables common to both modules."""
-        vars1 = set()
-        vars2 = set()
-        
-        for res in module1.resources.values():
-            vars1.update(res.tag_variables)
-        for res in module2.resources.values():
-            vars2.update(res.tag_variables)
-            
-        return list(vars1.intersection(vars2))
-
-    def _calculate_similarity(self, module1: ModuleInfo, module2: ModuleInfo) -> float:
-        """Calculate similarity score between two modules."""
-        # Compare resource types
-        resources1 = set(res.type for res in module1.resources.values())
-        resources2 = set(res.type for res in module2.resources.values())
-        resource_similarity = len(resources1.intersection(resources2)) / max(len(resources1), len(resources2)) if resources1 or resources2 else 0
-        
-        # Compare variables
-        vars1 = set(module1.variables.keys())
-        vars2 = set(module2.variables.keys())
-        var_similarity = len(vars1.intersection(vars2)) / max(len(vars1), len(vars2)) if vars1 or vars2 else 0
-        
-        # Compare tag patterns
-        tags1 = {res.type: set(res.tag_variables) for res in module1.resources.values() if res.supports_tags}
-        tags2 = {res.type: set(res.tag_variables) for res in module2.resources.values() if res.supports_tags}
-        
-        common_types = set(tags1.keys()) & set(tags2.keys())
-        if common_types:
-            tag_similarities = [
-                len(tags1[t].intersection(tags2[t])) / max(len(tags1[t]), len(tags2[t]))
-                for t in common_types
-                if tags1[t] or tags2[t]
-            ]
-            tag_similarity = sum(tag_similarities) / len(tag_similarities)
-        else:
-            tag_similarity = 0
-        
-        # Weighted average with higher weight for tag patterns
-        return (resource_similarity * 0.4 + var_similarity * 0.2 + tag_similarity * 0.4)
