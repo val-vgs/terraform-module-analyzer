@@ -1,4 +1,5 @@
 """Resource definitions and tag analysis utilities."""
+from typing import Set, Dict, List
 
 # AWS resources that commonly support tags
 TAGGABLE_RESOURCES = {
@@ -83,7 +84,7 @@ def get_resource_service(resource_type: str) -> str:
         return parts[1]
     return ''
 
-def get_common_tag_patterns() -> dict:
+def get_common_tag_patterns() -> Dict[str, str]:
     """Return common tag patterns and their descriptions."""
     return {
         'var.tags': 'Direct tag variable reference',
@@ -93,7 +94,7 @@ def get_common_tag_patterns() -> dict:
         'local.tags': 'Local tag variable reference'
     }
 
-def suggest_tag_fixes(resource_type: str, current_tags: set, has_tags_var: bool) -> List[str]:
+def suggest_tag_fixes(resource_type: str, current_tags: Set[str], has_tags_var: bool) -> List[str]:
     """Suggest fixes for tag-related issues."""
     suggestions = []
     missing_required = REQUIRED_TAGS - current_tags
