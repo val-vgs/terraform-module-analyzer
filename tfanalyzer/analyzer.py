@@ -42,35 +42,35 @@ class TerraformAnalyzer:
                     
                     # Extract variables
                     if 'variable' in parsed:
-                        for var_name, var_configs in parsed['variable'].items():
-                            if isinstance(var_configs, list) and var_configs:
-                                variables[var_name] = var_configs[0]
+                        for var_block in parsed['variable']:
+                            for var_name, var_config in var_block.items():
+                                variables[var_name] = var_config
                     
                     # Extract outputs
                     if 'output' in parsed:
-                        for out_name, out_configs in parsed['output'].items():
-                            if isinstance(out_configs, list) and out_configs:
-                                outputs[out_name] = out_configs[0]
+                        for out_block in parsed['output']:
+                            for out_name, out_config in out_block.items():
+                                outputs[out_name] = out_config
                     
                     # Extract resources
                     if 'resource' in parsed:
-                        for res_type, res_configs in parsed['resource'].items():
-                            if isinstance(res_configs, dict):
+                        for res_block in parsed['resource']:
+                            for res_type, res_configs in res_block.items():
                                 for res_name, res_config in res_configs.items():
-                                    if isinstance(res_config, list) and res_config:
-                                        resources[f"{res_type}.{res_name}"] = res_config[0]
+                                    resources[f"{res_type}.{res_name}"] = res_config
                     
-                    # Extract dependencies from modules
+                    # Extract module dependencies
                     if 'module' in parsed:
-                        for mod_name, mod_configs in parsed['module'].items():
-                            if isinstance(mod_configs, list) and mod_configs and 'source' in mod_configs[0]:
-                                dependencies.add(mod_configs[0]['source'])
+                        for mod_block in parsed['module']:
+                            for mod_name, mod_config in mod_block.items():
+                                if 'source' in mod_config:
+                                    dependencies.add(mod_config['source'])
                     
                     # Extract data source dependencies
                     if 'data' in parsed:
-                        for data_type, data_configs in parsed['data'].items():
-                            if isinstance(data_configs, dict):
-                                for data_name in data_configs:
+                        for data_block in parsed['data']:
+                            for data_type, data_configs in data_block.items():
+                                for data_name, _ in data_configs.items():
                                     dependencies.add(f"data.{data_type}.{data_name}")
             
             except Exception as e:
@@ -109,7 +109,7 @@ class TerraformAnalyzer:
         for module_name, module_info in self.modules.items():
             self.dependency_graph.add_node(module_name)
             for dep in module_info.dependencies:
-                if isinstance(dep, str):  # Ensure dependency is a string
+                if isinstance(dep, str):
                     self.dependency_graph.add_edge(module_name, dep)
         
         return self
