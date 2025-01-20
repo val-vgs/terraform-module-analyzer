@@ -4,10 +4,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 from rich.markdown import Markdown
+from rich.panel import Panel
 from .analyzer import TerraformAnalyzer
-import networkx as nx
-import matplotlib.pyplot as plt
-import yaml
 
 @click.group()
 @click.version_option()
@@ -49,6 +47,7 @@ def _output_text(results, console):
     table.add_column("Variables", style="green")
     table.add_column("Outputs", style="yellow")
     table.add_column("Complexity", style="red")
+    table.add_column("Tag Status", style="blue")
     
     total_resources = 0
     total_variables = 0
@@ -56,12 +55,15 @@ def _output_text(results, console):
     
     for module_name, module_info in results.modules.items():
         report = results.generate_module_report(module_name)
+        tag_status = "✓" if report['tag_analysis']['has_tags_variable'] and not report['tag_analysis']['tag_issues'] else "⚠️"
+        
         table.add_row(
             module_name,
             str(report['summary']['resources_count']),
             str(report['summary']['variables_count']),
             str(report['summary']['outputs_count']),
-            str(report['complexity_score'])
+            str(report['complexity_score']),
+            tag_status
         )
         total_resources += report['summary']['resources_count']
         total_variables += report['summary']['variables_count']
@@ -76,6 +78,29 @@ def _output_text(results, console):
     console.print(f"Total Variables: {total_variables}")
     console.print(f"Total Outputs: {total_outputs}")
     
+    # Print tag analysis
+    console.print("\n[bold]Tag Analysis:[/bold]")
+    for module_name, module_info in results.modules.items():
+        report = results.generate_module_report(module_name)
+        tag_analysis = report['tag_analysis']
+        
+        if tag_analysis['has_tags_variable']:
+            console.print(f"\n[cyan]{module_name}[/cyan]:")
+            console.print(f"  Taggable Resources: {report['summary']['taggable_resources']}")
+            console.print(f"  Tagged Resources: {report['summary']['tagged_resources']}")
+            
+            if tag_analysis['tag_issues']:
+                console.print("  [red]Issues:[/red]")
+                for issue in tag_analysis['tag_issues']:
+                    console.print(f"    • {issue}")
+            
+            if tag_analysis['tag_propagation']:
+                console.print("  [yellow]Tag Propagation Issues:[/yellow]")
+                for resource, issues in tag_analysis['tag_propagation'].items():
+                    console.print(f"    • {resource}: {', '.join(issues)}")
+        else:
+            console.print(f"\n[yellow]{module_name}: No tags variable defined[/yellow]")
+
     # Print complexity insights
     console.print("\n[bold]Complexity Insights:[/bold]")
     complex_modules = [
@@ -84,7 +109,7 @@ def _output_text(results, console):
     ]
     complex_modules.sort(key=lambda x: x[1], reverse=True)
     
-    for module, score in complex_modules[:5]:
+    for module, score in complex_modules:
         console.print(f"{module}: {score}")
 
 def _output_json(results, output_path):
@@ -114,19 +139,22 @@ def _output_json(results, output_path):
         }
     }
     
-    with open(output_dir / 'analysis.json', 'w') as f:
+    output_file = output_dir / 'analysis.json'
+    with open(output_file, 'w') as f:
         json.dump(analysis_data, f, indent=2)
+    
+    console = Console()
+    console.print(f"\nAnalysis output saved to: {output_file}")
 
 def _output_markdown(results, output_path):
     """Output analysis results in Markdown format."""
     output_dir = Path(output_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Generate main README
     with open(output_dir / 'README.md', 'w') as f:
         f.write("# Terraform Module Analysis\n\n")
         
-        # Summary section
+        # Write summary section
         f.write("## Summary\n\n")
         f.write("| Metric | Count |\n")
         f.write("|--------|-------|\n")
@@ -147,7 +175,7 @@ def _output_markdown(results, output_path):
         f.write(f"| Total Variables | {total_variables} |\n")
         f.write(f"| Total Outputs | {total_outputs} |\n\n")
         
-        # Modules section
+        # Write modules section
         f.write("## Modules\n\n")
         for module_name in sorted(results.modules.keys()):
             report = results.generate_module_report(module_name)
@@ -156,16 +184,31 @@ def _output_markdown(results, output_path):
             f.write(f"- **Resources**: {report['summary']['resources_count']}\n")
             f.write(f"- **Variables**: {report['summary']['variables_count']}\n")
             f.write(f"- **Outputs**: {report['summary']['outputs_count']}\n")
-            f.write(f"- **Dependencies**: {len(report['dependencies'])}\n\n")
+            f.write(f"- **Taggable Resources**: {report['summary']['taggable_resources']}\n")
+            f.write(f"- **Tagged Resources**: {report['summary']['tagged_resources']}\n\n")
             
-            if report['variables']:
-                f.write("#### Variables\n\n")
-                f.write("| Name | Type | Description |\n")
-                f.write("|------|------|-------------|\n")
-                for var_name, var_info in report['variables'].items():
-                    var_type = var_info.get('type', '')
-                    var_desc = var_info.get('description', '').replace('\n', ' ')
-                    f.write(f"| {var_name} | {var_type} | {var_desc} |\n")
+            # Write tag analysis
+            if report['tag_analysis']['has_tags_variable']:
+                f.write("#### Tag Analysis\n\n")
+                if report['tag_analysis']['tag_issues']:
+                    f.write("**Issues:**\n\n")
+                    for issue in report['tag_analysis']['tag_issues']:
+                        f.write(f"- {issue}\n")
+                    f.write("\n")
+                
+                if report['tag_analysis']['tag_propagation']:
+                    f.write("**Tag Propagation Issues:**\n\n")
+                    for resource, issues in report['tag_analysis']['tag_propagation'].items():
+                        f.write(f"- {resource}: {', '.join(issues)}\n")
+                    f.write("\n")
+            
+            # Write details about resources
+            if report['resources']:
+                f.write("#### Resources\n\n")
+                f.write("| Resource | Type | Tags Support | Has Tags |\n")
+                f.write("|----------|------|--------------|----------|\n")
+                for res_name, res_info in report['resources'].items():
+                    f.write(f"| {res_name} | {res_info['type']} | {'Yes' if res_info['supports_tags'] else 'No'} | {'Yes' if res_info['has_tags'] else 'No'} |\n")
                 f.write("\n")
 
 def _start_web_interface(results):
