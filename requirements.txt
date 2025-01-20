@@ -1,5 +1,4 @@
-hcl2-parser>=2.0.0
-python-hcl2>=4.0.0
+python-hcl2>=3.0.0
 PyYAML>=6.0
 click>=8.0.0
 rich>=10.0.0
