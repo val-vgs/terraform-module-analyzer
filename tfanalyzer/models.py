@@ -38,6 +38,24 @@ class TagAnalysis:
     has_valid_propagation: bool
     issues: List[str]
 
+    @staticmethod
+    def _get_tag_keys(config: Dict) -> Set[str]:
+        """Safely extract tag keys from resource config."""
+        tags = config.get('tags', {})
+        if isinstance(tags, dict):
+            return set(tags.keys())
+        elif isinstance(tags, str):
+            # Handle cases where tags is a variable reference
+            return set()
+        elif isinstance(tags, list):
+            # Handle cases where tags might be a list of tags
+            tag_keys = set()
+            for tag in tags:
+                if isinstance(tag, dict):
+                    tag_keys.update(tag.keys())
+            return tag_keys
+        return set()
+
     @classmethod
     def analyze(cls, resource: ResourceInfo, module: ModuleInfo, required_tags: Set[str]) -> 'TagAnalysis':
         """Create a TagAnalysis instance by analyzing a resource's tags."""
@@ -54,8 +72,8 @@ class TagAnalysis:
         # Check for required and extra tags
         missing_tags = []
         extra_tags = []
-        if resource.has_tags and 'tags' in resource.config:
-            actual_tags = set(resource.config['tags'].keys())
+        if resource.has_tags:
+            actual_tags = cls._get_tag_keys(resource.config)
             missing_tags = list(required_tags - actual_tags)
             extra_tags = list(actual_tags - required_tags)
         
