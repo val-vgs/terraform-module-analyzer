@@ -6,6 +6,7 @@ import networkx as nx
 from dataclasses import dataclass
 import csv
 import re
+import os
 
 # AWS resources that commonly support tags
 TAGGABLE_RESOURCES = {
@@ -47,7 +48,7 @@ class ModuleInfo:
 
 class TerraformAnalyzer:
     def __init__(self, root_path: Path, output_path: Path, config_path: str = None):
-        self.root_path = root_path
+        self.root_path = root_path.resolve()  # Convert to absolute path
         self.output_path = output_path
         self.modules: Dict[str, ModuleInfo] = {}
         self.dependency_graph = nx.DiGraph()
@@ -69,6 +70,19 @@ class TerraformAnalyzer:
             return str(source)
         return None
 
+    def _resolve_module_path(self, base_path: Path, source: str) -> Path:
+        """Resolve a module source path relative to the base path."""
+        if source.startswith('../') or source.startswith('./'):
+            resolved_path = (base_path / source).resolve()
+            # Ensure the resolved path is within the root path
+            try:
+                resolved_path.relative_to(self.root_path)
+                return resolved_path
+            except ValueError:
+                print(f"Warning: Module path {resolved_path} is outside root path {self.root_path}")
+                return resolved_path
+        return base_path / source
+
     def _analyze_submodules(self, module_path: Path, module_configs: List[Dict]) -> Dict[str, 'ModuleInfo']:
         """Recursively analyze submodules."""
         submodules = {}
@@ -80,20 +94,20 @@ class TerraformAnalyzer:
                     self.processed_modules.add(source)
                     
                     # Handle local module paths
-                    if source.startswith('./') or source.startswith('../'):
-                        submodule_path = (module_path / source).resolve()
-                        if submodule_path.exists():
-                            submodules[mod_name] = self.analyze_module(
-                                submodule_path,
-                                is_submodule=True,
-                                submodule_name=mod_name,
-                                submodule_source=source
-                            )
+                    submodule_path = self._resolve_module_path(module_path, source)
+                    if submodule_path.exists():
+                        submodules[mod_name] = self.analyze_module(
+                            submodule_path,
+                            is_submodule=True,
+                            submodule_name=mod_name,
+                            submodule_source=source
+                        )
         
         return submodules
 
     def analyze_module(self, module_path: Path, is_submodule=False, submodule_name="", submodule_source="") -> ModuleInfo:
         """Analyze a single Terraform module and its submodules."""
+        module_path = module_path.resolve()
         tf_files = list(module_path.glob('*.tf'))
         variables = {}
         outputs = {}
@@ -131,6 +145,11 @@ class TerraformAnalyzer:
                                     full_name = f"{res_type}.{res_name}"
                                     supports_tags, tag_vars = self._analyze_resource_tags(res_type, res_config)
                                     
+                                    try:
+                                        module_rel_path = module_path.relative_to(self.root_path)
+                                    except ValueError:
+                                        module_rel_path = module_path
+                                    
                                     resources[full_name] = ResourceInfo(
                                         name=res_name,
                                         type=res_type,
@@ -138,7 +157,7 @@ class TerraformAnalyzer:
                                         supports_tags=supports_tags,
                                         has_tags='tags' in res_config,
                                         tag_variables=tag_vars,
-                                        module_path=str(module_path.relative_to(self.root_path)),
+                                        module_path=str(module_rel_path),
                                         submodule_source=submodule_source if is_submodule else None
                                     )
                                     
@@ -180,6 +199,7 @@ class TerraformAnalyzer:
     def generate_tag_analysis_csv(self, output_path: Path):
         """Generate a CSV report of tag analysis for all resources in all modules."""
         csv_path = output_path / 'tag_analysis.csv'
+        output_path.mkdir(parents=True, exist_ok=True)
         
         with open(csv_path, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -219,6 +239,50 @@ class TerraformAnalyzer:
                 write_module_resources(module_info, module_name)
         
         print(f"Tag analysis CSV written to: {csv_path}")
+
+    def generate_module_report(self, module_name: str) -> Dict:
+        """Generate a detailed report for a specific module."""
+        module = self.modules[module_name]
+        
+        # Analyze tag usage
+        taggable_resources = {name: info for name, info in module.resources.items() 
+                            if info.supports_tags}
+        tagged_resources = {name: info for name, info in taggable_resources.items() 
+                          if info.has_tags}
+        
+        tag_issues = []
+        if module.has_tags_var and taggable_resources:
+            untagged = set(taggable_resources.keys()) - set(tagged_resources.keys())
+            if untagged:
+                tag_issues.append(f"Resources missing tags: {', '.join(untagged)}")
+        
+        return {
+            "name": module_name,
+            "path": str(module.path),
+            "summary": {
+                "variables_count": len(module.variables),
+                "outputs_count": len(module.outputs),
+                "resources_count": len(module.resources),
+                "dependencies_count": len(module.dependencies),
+                "taggable_resources": len(taggable_resources),
+                "tagged_resources": len(tagged_resources)
+            },
+            "variables": module.variables,
+            "outputs": module.outputs,
+            "resources": {name: {
+                "type": res.type,
+                "supports_tags": res.supports_tags,
+                "has_tags": res.has_tags,
+                "tag_variables": res.tag_variables
+            } for name, res in module.resources.items()},
+            "dependencies": list(module.dependencies),
+            "complexity_score": self._calculate_complexity_score(module),
+            "tag_analysis": {
+                "has_tags_variable": module.has_tags_var,
+                "tag_issues": tag_issues,
+                "tag_propagation": module.tag_analysis
+            }
+        }
         
     def analyze(self):
         """Perform complete analysis of all Terraform modules."""
@@ -270,3 +334,22 @@ class TerraformAnalyzer:
         refs.update(var_refs)
         
         return list(refs)
+
+    def _calculate_complexity_score(self, module: ModuleInfo) -> float:
+        """Calculate a complexity score for the module."""
+        base_score = (
+            len(module.variables) * 1.0 +
+            len(module.outputs) * 0.8 +
+            len(module.resources) * 1.5 +
+            len(module.dependencies) * 1.2
+        )
+        
+        code_lines = len(module.source_code.splitlines())
+        size_factor = code_lines / 100
+        
+        tag_factor = 0
+        if module.has_tags_var:
+            tag_factor += 0.2
+            tag_factor += len(module.tag_analysis) * 0.1
+        
+        return round(base_score * (1 + size_factor * 0.5 + tag_factor), 2)
