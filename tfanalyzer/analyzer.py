@@ -80,6 +80,7 @@ class ModuleAnalyzer:
         dependencies = set()
         has_tags_var = False
         tag_analysis = {}
+        submodules = {}  # Initialize submodules here
         
         # Get combined configuration
         combined_config = self.analyze_code(module_path)
@@ -124,28 +125,30 @@ class ModuleAnalyzer:
                                 tag_analysis[full_name] = ["No tags variable propagation"]
 
             # Process submodules
-            modules_config = combined_config.get('module', {})
-            if modules_config:
+            module_config = combined_config.get('module', {})
+            if module_config:
                 submodules = self.submodule_analyzer.analyze_submodules(
-                    module_path, 
-                    modules_config, 
+                    module_path,
+                    module_config,
                     self.analyze_module
                 )
-                for mod_config in modules_config.values():
-                    if 'source' in mod_config:
+
+                for mod_config in module_config.values():
+                    if isinstance(mod_config, dict) and 'source' in mod_config:
                         dependencies.add(mod_config['source'])
+
         except Exception as e:
             print(f"Error processing module {module_path}: {e}")
             return ModuleInfo(
                 path=module_path,
-                variables={},
-                outputs={},
-                resources={},
-                dependencies=set(),
+                variables=variables,
+                outputs=outputs,
+                resources=resources,
+                dependencies=dependencies,
                 source_code="",
-                has_tags_var=False,
-                tag_analysis={},
-                submodules={}
+                has_tags_var=has_tags_var,
+                tag_analysis=tag_analysis,
+                submodules={}  # Empty submodules on error
             )
 
         # Collect source code
@@ -165,7 +168,7 @@ class ModuleAnalyzer:
             source_code=source_code,
             has_tags_var=has_tags_var,
             tag_analysis=tag_analysis,
-            submodules=submodules
+            submodules=submodules  # Add submodules to the result
         )
 
     def analyze(self):
